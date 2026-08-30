@@ -1,7 +1,8 @@
-// Package cli wires the pipeline seams into runnable commands. The fetch
-// command currently wires fake PlatformClients and a fake LLMProvider
-// (ADR-0001-0003 govern what the real implementations will look like, added
-// in later tickets); nothing here does real network or browser work yet.
+// Package cli wires the pipeline seams into runnable commands. fetch wires a
+// real naukriclient for Naukri (ticket 04) and a fake PlatformClient for
+// LinkedIn (until ticket 07); the LLMProvider defaults to a fake and opts
+// into the real Claude client via LLM_PROVIDER (ticket 02). ADR-0001-0003
+// govern the real PlatformClient implementations.
 package cli
 
 import (
@@ -19,7 +20,9 @@ import (
 	"resumefetcher/internal/output"
 	"resumefetcher/internal/pipeline"
 	fakeplatform "resumefetcher/internal/platform/fake"
+	"resumefetcher/internal/platform/naukriclient"
 	"resumefetcher/internal/reviewer"
+	"resumefetcher/internal/session"
 )
 
 func RunFetch(args []string, in io.Reader, out io.Writer) error {
@@ -51,7 +54,7 @@ func RunFetch(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	orch := &pipeline.Orchestrator{
-		Platforms: selectPlatforms(sources),
+		Platforms: selectPlatforms(sources, out),
 		LLM:       llm,
 		Reviewer:  reviewer.NewStdin(in, out),
 		Config:    pipeline.DefaultConfig(),
@@ -146,10 +149,12 @@ func writePartialOnRankFailure(out io.Writer, outDir string, err error) error {
 }
 
 // selectPlatforms builds the PlatformEntry values for the requested Sources,
-// always in Naukri-then-LinkedIn order regardless of flag order.
-func selectPlatforms(sources []domain.Source) []pipeline.PlatformEntry {
+// always in Naukri-then-LinkedIn order regardless of flag order. Naukri uses
+// the real naukriclient (ticket 04), reusing the same sessionDir as `login
+// naukri`; LinkedIn stands in with a fake PlatformClient until ticket 07.
+func selectPlatforms(sources []domain.Source, out io.Writer) []pipeline.PlatformEntry {
 	all := []pipeline.PlatformEntry{
-		{Source: domain.SourceNaukri, Client: fakeplatform.New(domain.SourceNaukri, sampleNaukriProfiles())},
+		{Source: domain.SourceNaukri, Client: naukriclient.New(session.New(sessionDir), out)},
 		{Source: domain.SourceLinkedIn, Client: fakeplatform.New(domain.SourceLinkedIn, sampleLinkedInProfiles())},
 	}
 	want := make(map[domain.Source]bool, len(sources))
@@ -165,15 +170,8 @@ func selectPlatforms(sources []domain.Source) []pipeline.PlatformEntry {
 	return entries
 }
 
-// sampleNaukriProfiles and sampleLinkedInProfiles stand in for real search
-// results until tickets 04 and 07 wire in real PlatformClients.
-func sampleNaukriProfiles() []domain.Profile {
-	return []domain.Profile{
-		{ExternalID: "naukri-1", Source: domain.SourceNaukri, Name: "Asha Rao", Email: "asha.rao@example.com", Company: "Acme Corp", Title: "Backend Engineer", Skills: []string{"Go", "Postgres"}, Experience: 5, Location: "Bangalore"},
-		{ExternalID: "naukri-2", Source: domain.SourceNaukri, Name: "Ravi Kumar", Email: "ravi.kumar@example.com", Company: "Globex Inc", Title: "SRE", Skills: []string{"Kubernetes", "Go"}, Experience: 7, Location: "Pune"},
-	}
-}
-
+// sampleLinkedInProfiles stands in for real search results until ticket 07
+// wires in the real LinkedIn PlatformClient.
 func sampleLinkedInProfiles() []domain.Profile {
 	return []domain.Profile{
 		{ExternalID: "linkedin-1", Source: domain.SourceLinkedIn, Name: "Asha Rao", Email: "asha.rao@example.com", Company: "Acme Corp", Title: "Backend Engineer", Skills: []string{"Go", "gRPC"}, Experience: 5, Location: "Bangalore"},

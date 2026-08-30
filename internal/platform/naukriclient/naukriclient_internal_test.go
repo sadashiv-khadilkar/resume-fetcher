@@ -20,6 +20,12 @@ type fakeBrowser struct {
 	manualState    platform.SessionState
 	manualErr      error
 	manualCalled   bool
+
+	searchProfiles []domain.Profile
+	searchErr      error
+	searchCalled   bool
+	searchState    platform.SessionState
+	searchFilters  domain.Filters
 }
 
 func (f *fakeBrowser) ValidateSession(platform.SessionState) (bool, error) {
@@ -29,6 +35,13 @@ func (f *fakeBrowser) ValidateSession(platform.SessionState) (bool, error) {
 func (f *fakeBrowser) ManualLogin() (platform.SessionState, error) {
 	f.manualCalled = true
 	return f.manualState, f.manualErr
+}
+
+func (f *fakeBrowser) Search(state platform.SessionState, filters domain.Filters) ([]domain.Profile, error) {
+	f.searchCalled = true
+	f.searchState = state
+	f.searchFilters = filters
+	return f.searchProfiles, f.searchErr
 }
 
 func newTestClient(t *testing.T, b browser) (*Client, *session.Store, *bytes.Buffer) {
@@ -151,12 +164,89 @@ func TestLogin_ManualLoginError_IsSurfacedAndNotPersisted(t *testing.T) {
 	}
 }
 
-func TestSearchAndDownloadResume_NotYetImplemented(t *testing.T) {
-	client, _, _ := newTestClient(t, &fakeBrowser{})
+func TestSearch_ReusesValidSessionAndDelegatesToBrowser(t *testing.T) {
+	want := []domain.Profile{{ExternalID: "n1", Name: "Asha Rao"}}
+	fb := &fakeBrowser{validateResult: true, searchProfiles: want}
+	client, store, _ := newTestClient(t, fb)
+	existing := platform.SessionState{Data: []byte("existing-cookies")}
+	if err := store.Save(domain.SourceNaukri, existing); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	filters := domain.Filters{Skills: []string{"Go"}}
+	got, err := client.Search(filters)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ExternalID != "n1" {
+		t.Errorf("Search() = %+v, want %+v", got, want)
+	}
+	if fb.manualCalled {
+		t.Error("Search() called ManualLogin despite a valid persisted session")
+	}
+	if !fb.searchCalled {
+		t.Fatal("expected Search() to delegate to browser.Search")
+	}
+	if string(fb.searchState.Data) != "existing-cookies" {
+		t.Errorf("browser.Search got session %q, want the reused persisted session", fb.searchState.Data)
+	}
+	if len(fb.searchFilters.Skills) != 1 || fb.searchFilters.Skills[0] != "Go" {
+		t.Errorf("browser.Search got filters %+v, want %+v", fb.searchFilters, filters)
+	}
+}
+
+func TestSearch_NoPersistedSession_FallsBackToManualLoginThenSearches(t *testing.T) {
+	fb := &fakeBrowser{
+		manualState:    platform.SessionState{Data: []byte("fresh-cookies")},
+		searchProfiles: []domain.Profile{{ExternalID: "n2"}},
+	}
+	client, store, _ := newTestClient(t, fb)
+
+	got, err := client.Search(domain.Filters{})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !fb.manualCalled {
+		t.Error("expected Search() to fall back to ManualLogin when no session is persisted")
+	}
+	if string(fb.searchState.Data) != "fresh-cookies" {
+		t.Errorf("browser.Search got session %q, want the freshly captured session", fb.searchState.Data)
+	}
+	if len(got) != 1 || got[0].ExternalID != "n2" {
+		t.Errorf("Search() = %+v, want the browser's results", got)
+	}
+	if _, err := store.Load(domain.SourceNaukri); err != nil {
+		t.Errorf("expected the fresh session to be persisted, Load() error = %v", err)
+	}
+}
+
+func TestSearch_PropagatesBrowserError(t *testing.T) {
+	fb := &fakeBrowser{validateResult: true, searchErr: errors.New("resdex boom")}
+	client, store, _ := newTestClient(t, fb)
+	if err := store.Save(domain.SourceNaukri, platform.SessionState{Data: []byte("cookies")}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 
 	if _, err := client.Search(domain.Filters{}); err == nil {
-		t.Error("expected Search to return an error before ticket 04")
+		t.Fatal("expected Search() to surface the browser's error")
 	}
+}
+
+func TestSearch_ManualLoginFailure_IsSurfacedWithoutSearching(t *testing.T) {
+	fb := &fakeBrowser{manualErr: errors.New("operator closed the browser")}
+	client, _, _ := newTestClient(t, fb)
+
+	if _, err := client.Search(domain.Filters{}); err == nil {
+		t.Fatal("expected Search() to surface the ManualLogin error")
+	}
+	if fb.searchCalled {
+		t.Error("Search() should not call browser.Search when ensuring the session failed")
+	}
+}
+
+func TestDownloadResume_NotYetImplemented(t *testing.T) {
+	client, _, _ := newTestClient(t, &fakeBrowser{})
+
 	if _, err := client.DownloadResume("some-id"); err == nil {
 		t.Error("expected DownloadResume to return an error before ticket 05")
 	}

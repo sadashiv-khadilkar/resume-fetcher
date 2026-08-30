@@ -11,7 +11,72 @@ import (
 	claudellm "resumefetcher/internal/llmprovider/claude"
 	fakellm "resumefetcher/internal/llmprovider/fake"
 	"resumefetcher/internal/pipeline"
+	fakeplatform "resumefetcher/internal/platform/fake"
+	"resumefetcher/internal/platform/naukriclient"
 )
+
+func TestParseSources(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []domain.Source
+		wantErr bool
+	}{
+		{name: "both", value: "both", want: []domain.Source{domain.SourceNaukri, domain.SourceLinkedIn}},
+		{name: "naukri", value: "naukri", want: []domain.Source{domain.SourceNaukri}},
+		{name: "linkedin", value: "linkedin", want: []domain.Source{domain.SourceLinkedIn}},
+		{name: "case-insensitive", value: "NauKri", want: []domain.Source{domain.SourceNaukri}},
+		{name: "invalid", value: "bogus", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSources(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error for an invalid --source value")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSources() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseSources() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseSources()[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSelectPlatforms checks the real-vs-fake wiring decision itself
+// (naukriclient for Naukri per ticket 04, fake for LinkedIn until ticket 07)
+// without exercising naukriclient's browser automation - real PlatformClient
+// construction does no network/browser work, only Search and Login do.
+func TestSelectPlatforms(t *testing.T) {
+	var out bytes.Buffer
+	entries := selectPlatforms([]domain.Source{domain.SourceNaukri, domain.SourceLinkedIn}, &out)
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+
+	if entries[0].Source != domain.SourceNaukri {
+		t.Errorf("entries[0].Source = %v, want %v", entries[0].Source, domain.SourceNaukri)
+	}
+	if _, ok := entries[0].Client.(*naukriclient.Client); !ok {
+		t.Errorf("entries[0].Client is %T, want *naukriclient.Client", entries[0].Client)
+	}
+
+	if entries[1].Source != domain.SourceLinkedIn {
+		t.Errorf("entries[1].Source = %v, want %v", entries[1].Source, domain.SourceLinkedIn)
+	}
+	if _, ok := entries[1].Client.(*fakeplatform.Client); !ok {
+		t.Errorf("entries[1].Client is %T, want *fakeplatform.Client", entries[1].Client)
+	}
+}
 
 func TestBuildLLMProvider(t *testing.T) {
 	tests := []struct {

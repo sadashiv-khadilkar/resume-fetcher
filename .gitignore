@@ -1,0 +1,9 @@
+# Secrets - never commit. Copy .env.example to .env instead.
+.env
+
+# Fetch Run output (internal/output) - per-run generated data, not source.
+/output/
+
+# go build ./cmd/resumefetcher output at the repo root.
+/resumefetcher
+/resumefetcher.exe

@@ -6,10 +6,19 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/joho/godotenv"
+
 	"resumefetcher/internal/cli"
 )
 
 func main() {
+	// .env is optional (e.g. LLM_PROVIDER unset defaults to the fake
+	// provider, which needs no key) and gitignored - see .env.example.
+	// Values already in the environment take precedence over the file.
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "warning: failed to load .env:", err)
+	}
+
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: resumefetcher <fetch> [flags]")
 		os.Exit(1)

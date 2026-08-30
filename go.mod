@@ -2,7 +2,10 @@ module resumefetcher
 
 go 1.24.5
 
-require github.com/anthropics/anthropic-sdk-go v1.68.0
+require (
+	github.com/anthropics/anthropic-sdk-go v1.68.0
+	github.com/joho/godotenv v1.5.1
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

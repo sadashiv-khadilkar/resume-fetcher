@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"errors"
 	"testing"
 
 	"resumefetcher/internal/domain"
@@ -117,8 +118,56 @@ func TestOrchestrator_Run_ErrorsWhenRankOmitsACandidate(t *testing.T) {
 		Config:    pipeline.DefaultConfig(),
 	}
 
-	if _, err := orch.Run("some JD text"); err == nil {
+	_, err := orch.Run("some JD text")
+	if err == nil {
 		t.Fatal("expected an error when Rank() omits a candidate, got nil")
+	}
+
+	var rankFailedErr *pipeline.RankFailedError
+	if !errors.As(err, &rankFailedErr) {
+		t.Fatalf("Run() error = %v, want a *pipeline.RankFailedError (raw pool must be preserved here too)", err)
+	}
+	if rankFailedErr.RawResult == nil || len(rankFailedErr.RawResult.Candidates) != 1 {
+		t.Errorf("expected RawResult to hold the one searched candidate, got %+v", rankFailedErr.RawResult)
+	}
+}
+
+func TestOrchestrator_Run_PreservesRawPoolWhenRankFails(t *testing.T) {
+	naukri := fakeplatform.New(domain.SourceNaukri, []domain.Profile{
+		{ExternalID: "n1", Source: domain.SourceNaukri, Name: "Asha Rao", Email: "asha@example.com"},
+		{ExternalID: "n2", Source: domain.SourceNaukri, Name: "Ravi Kumar", Email: "ravi@example.com"},
+	})
+
+	rankErr := errors.New("claude rank: rate limited (retries exhausted)")
+	llm := &fakellm.Provider{}
+	llm.RankOverride = func(_ string, _ []domain.Candidate) ([]domain.Match, error) {
+		return nil, rankErr
+	}
+
+	orch := &pipeline.Orchestrator{
+		Platforms: []pipeline.PlatformEntry{{Source: domain.SourceNaukri, Client: naukri}},
+		LLM:       llm,
+		Reviewer:  reviewer.AutoAccept{},
+		Config:    pipeline.DefaultConfig(),
+	}
+
+	_, err := orch.Run("some JD text")
+	if err == nil {
+		t.Fatal("expected an error when Rank() fails")
+	}
+
+	var rankFailedErr *pipeline.RankFailedError
+	if !errors.As(err, &rankFailedErr) {
+		t.Fatalf("Run() error = %v, want a *pipeline.RankFailedError", err)
+	}
+	if !errors.Is(rankFailedErr, rankErr) {
+		t.Errorf("RankFailedError does not unwrap to the original Rank() error")
+	}
+	if rankFailedErr.RawResult == nil {
+		t.Fatal("expected RawResult to hold the unranked candidate pool")
+	}
+	if len(rankFailedErr.RawResult.Candidates) != 2 {
+		t.Fatalf("got %d raw candidates, want 2 (both searched profiles, unranked)", len(rankFailedErr.RawResult.Candidates))
 	}
 }
 

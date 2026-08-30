@@ -49,6 +49,21 @@ type RunResult struct {
 	Resumes    map[string]domain.ResumeFile
 }
 
+// RankFailedError signals that LLMProvider.Rank failed (after the provider's
+// own bounded retries were exhausted, per ticket 02). RawResult carries the
+// already-searched, unranked Candidate pool so the caller can persist it
+// instead of losing that work.
+type RankFailedError struct {
+	Err       error
+	RawResult *RunResult
+}
+
+func (e *RankFailedError) Error() string {
+	return fmt.Sprintf("rank: %v (raw candidate pool preserved)", e.Err)
+}
+
+func (e *RankFailedError) Unwrap() error { return e.Err }
+
 func (o *Orchestrator) Run(jd string) (*RunResult, error) {
 	filters, err := o.LLM.ExtractFilters(jd)
 	if err != nil {
@@ -76,7 +91,10 @@ func (o *Orchestrator) Run(jd string) (*RunResult, error) {
 
 	matches, err := o.LLM.Rank(jd, candidates)
 	if err != nil {
-		return nil, fmt.Errorf("rank: %w", err)
+		return nil, &RankFailedError{
+			Err:       err,
+			RawResult: &RunResult{Candidates: candidates, Resumes: map[string]domain.ResumeFile{}},
+		}
 	}
 	scoreByID := make(map[string]float64, len(matches))
 	for _, m := range matches {
@@ -85,7 +103,10 @@ func (o *Orchestrator) Run(jd string) (*RunResult, error) {
 	for i := range candidates {
 		score, ok := scoreByID[candidates[i].ID]
 		if !ok {
-			return nil, fmt.Errorf("rank: no Match Score returned for candidate %s", candidates[i].ID)
+			return nil, &RankFailedError{
+				Err:       fmt.Errorf("no Match Score returned for candidate %s", candidates[i].ID),
+				RawResult: &RunResult{Candidates: candidates, Resumes: map[string]domain.ResumeFile{}},
+			}
 		}
 		candidates[i].MatchScore = score
 	}

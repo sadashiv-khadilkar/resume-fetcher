@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"strings"
 
 	"resumefetcher/internal/domain"
+	"resumefetcher/internal/llmprovider"
+	claudellm "resumefetcher/internal/llmprovider/claude"
 	fakellm "resumefetcher/internal/llmprovider/fake"
 	"resumefetcher/internal/output"
 	"resumefetcher/internal/pipeline"
@@ -42,16 +45,21 @@ func RunFetch(args []string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("read JD: %w", err)
 	}
 
+	llm, err := buildLLMProvider()
+	if err != nil {
+		return err
+	}
+
 	orch := &pipeline.Orchestrator{
 		Platforms: selectPlatforms(sources),
-		LLM:       &fakellm.Provider{ScoreFunc: sampleScore},
+		LLM:       llm,
 		Reviewer:  reviewer.NewStdin(in, out),
 		Config:    pipeline.DefaultConfig(),
 	}
 
 	result, err := orch.Run(string(jdBytes))
 	if err != nil {
-		return fmt.Errorf("run pipeline: %w", err)
+		return writePartialOnRankFailure(out, *outDir, err)
 	}
 
 	runDir, err := output.WriteRun(*outDir, result)
@@ -100,6 +108,41 @@ func parseSources(value string) ([]domain.Source, error) {
 	default:
 		return nil, fmt.Errorf("invalid --source %q: must be naukri, linkedin, or both", value)
 	}
+}
+
+// buildLLMProvider selects the LLMProvider via the LLM_PROVIDER env var
+// (case-insensitive; defaults to the fake so existing runs/tests stay
+// network-free unless the operator opts in). LLM_PROVIDER=claude reads
+// ANTHROPIC_API_KEY (required) and ANTHROPIC_MODEL (optional override) from
+// the environment via internal/llmprovider/claude.
+func buildLLMProvider() (llmprovider.Provider, error) {
+	value := os.Getenv("LLM_PROVIDER")
+	switch strings.ToLower(value) {
+	case "", "fake":
+		return &fakellm.Provider{ScoreFunc: sampleScore}, nil
+	case "claude":
+		return claudellm.New(os.Getenv("ANTHROPIC_MODEL")), nil
+	default:
+		return nil, fmt.Errorf("invalid LLM_PROVIDER %q: must be fake or claude", value)
+	}
+}
+
+// writePartialOnRankFailure persists the raw (unranked) candidate pool when
+// err is a *pipeline.RankFailedError, so a Rank failure after retries are
+// exhausted (ticket 02) doesn't lose already-fetched data. It always returns
+// a non-nil error derived from err.
+func writePartialOnRankFailure(out io.Writer, outDir string, err error) error {
+	var rankErr *pipeline.RankFailedError
+	if !errors.As(err, &rankErr) {
+		return fmt.Errorf("run pipeline: %w", err)
+	}
+
+	runDir, writeErr := output.WriteRun(outDir, rankErr.RawResult)
+	if writeErr != nil {
+		return fmt.Errorf("run pipeline: %w; also failed to persist raw candidate pool: %v", err, writeErr)
+	}
+	fmt.Fprintf(out, "\nRanking failed after retries: %v\nRaw (unranked) candidate pool saved to %s\n", rankErr.Err, runDir)
+	return fmt.Errorf("run pipeline: %w", err)
 }
 
 // selectPlatforms builds the PlatformEntry values for the requested Sources,

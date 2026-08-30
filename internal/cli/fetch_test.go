@@ -63,3 +63,85 @@ func TestRunFetch_RequiresJDFlag(t *testing.T) {
 		t.Fatal("expected an error when --jd is missing")
 	}
 }
+
+func TestRunFetch_SourceFlag(t *testing.T) {
+	jdPath := filepath.Join(t.TempDir(), "jd.md")
+	if err := os.WriteFile(jdPath, []byte("# Backend Engineer\n\nGo, distributed systems."), 0o644); err != nil {
+		t.Fatalf("write JD fixture: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		source      string
+		wantSources []string // sources expected across the run's candidates
+	}{
+		{name: "naukri only", source: "naukri", wantSources: []string{"naukri"}},
+		{name: "linkedin only", source: "linkedin", wantSources: []string{"linkedin"}},
+		{name: "both explicit", source: "both", wantSources: []string{"naukri", "linkedin"}},
+		{name: "case-insensitive", source: "NauKri", wantSources: []string{"naukri"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			var out bytes.Buffer
+			in := strings.NewReader("\n")
+
+			err := cli.RunFetch([]string{"--jd", jdPath, "--out", outDir, "--source", tt.source}, in, &out)
+			if err != nil {
+				t.Fatalf("RunFetch() error = %v", err)
+			}
+
+			entries, err := os.ReadDir(outDir)
+			if err != nil {
+				t.Fatalf("read outDir: %v", err)
+			}
+			runDir := filepath.Join(outDir, entries[0].Name())
+			raw, err := os.ReadFile(filepath.Join(runDir, "candidates.json"))
+			if err != nil {
+				t.Fatalf("candidates.json not found: %v", err)
+			}
+			var doc struct {
+				Candidates []struct {
+					Profiles []struct {
+						Source string `json:"source"`
+					} `json:"profiles"`
+				} `json:"candidates"`
+			}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("candidates.json invalid: %v", err)
+			}
+			if len(doc.Candidates) == 0 {
+				t.Fatal("expected at least one candidate")
+			}
+
+			seen := map[string]bool{}
+			for _, c := range doc.Candidates {
+				for _, p := range c.Profiles {
+					seen[p.Source] = true
+				}
+			}
+			for _, want := range tt.wantSources {
+				if !seen[want] {
+					t.Errorf("expected a candidate from source %q, got sources %v", want, seen)
+				}
+			}
+			if len(seen) != len(tt.wantSources) {
+				t.Errorf("got sources %v, want exactly %v", seen, tt.wantSources)
+			}
+		})
+	}
+}
+
+func TestRunFetch_RejectsInvalidSource(t *testing.T) {
+	jdPath := filepath.Join(t.TempDir(), "jd.md")
+	if err := os.WriteFile(jdPath, []byte("# Backend Engineer\n\nGo."), 0o644); err != nil {
+		t.Fatalf("write JD fixture: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := cli.RunFetch([]string{"--jd", jdPath, "--out", t.TempDir(), "--source", "bogus"}, strings.NewReader("\n"), &out)
+	if err == nil {
+		t.Fatal("expected an error for an invalid --source value")
+	}
+}

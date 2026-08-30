@@ -12,6 +12,10 @@ _Avoid_: Job posting, requirement doc
 A person surfaced by a search on Naukri or LinkedIn for a given JD. Holds one Profile per Source they were found on (merged into one Candidate when the same person is found on both), and optionally a Resume.
 _Avoid_: Result, lead, applicant
 
+**Source**:
+Naukri or LinkedIn — a platform a Fetch Run searches. The operator can scope a Fetch Run to one Source or both via `fetch --source`; defaults to both.
+_Avoid_: Platform (used for the `PlatformClient` code seam, not this operator-facing concept), site
+
 **Profile**:
 Structured data about a Candidate (name, contact info, skills, experience, education) scraped from their Naukri Resdex or LinkedIn page. Always available for a Candidate.
 _Avoid_: Resume, CV, record

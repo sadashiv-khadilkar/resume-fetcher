@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"resumefetcher/internal/domain"
 	fakellm "resumefetcher/internal/llmprovider/fake"
@@ -23,11 +24,17 @@ func RunFetch(args []string, in io.Reader, out io.Writer) error {
 	fs.SetOutput(out)
 	jdPath := fs.String("jd", "", "path to the JD Markdown file")
 	outDir := fs.String("out", "output", "base directory for Fetch Run output")
+	sourceFlag := fs.String("source", "both", "which Source(s) to search: naukri, linkedin, or both")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *jdPath == "" {
 		return fmt.Errorf("--jd is required")
+	}
+
+	sources, err := parseSources(*sourceFlag)
+	if err != nil {
+		return err
 	}
 
 	jdBytes, err := os.ReadFile(*jdPath)
@@ -36,13 +43,10 @@ func RunFetch(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	orch := &pipeline.Orchestrator{
-		Platforms: []pipeline.PlatformEntry{
-			{Source: domain.SourceNaukri, Client: fakeplatform.New(domain.SourceNaukri, sampleNaukriProfiles())},
-			{Source: domain.SourceLinkedIn, Client: fakeplatform.New(domain.SourceLinkedIn, sampleLinkedInProfiles())},
-		},
-		LLM:      &fakellm.Provider{ScoreFunc: sampleScore},
-		Reviewer: reviewer.NewStdin(in, out),
-		Config:   pipeline.DefaultConfig(),
+		Platforms: selectPlatforms(sources),
+		LLM:       &fakellm.Provider{ScoreFunc: sampleScore},
+		Reviewer:  reviewer.NewStdin(in, out),
+		Config:    pipeline.DefaultConfig(),
 	}
 
 	result, err := orch.Run(string(jdBytes))
@@ -81,6 +85,41 @@ func sourcesOf(c domain.Candidate) string {
 		s += string(p.Source)
 	}
 	return s
+}
+
+// parseSources maps the --source flag value to the Sources a Fetch Run
+// should search, case-insensitively.
+func parseSources(value string) ([]domain.Source, error) {
+	switch strings.ToLower(value) {
+	case "both":
+		return []domain.Source{domain.SourceNaukri, domain.SourceLinkedIn}, nil
+	case "naukri":
+		return []domain.Source{domain.SourceNaukri}, nil
+	case "linkedin":
+		return []domain.Source{domain.SourceLinkedIn}, nil
+	default:
+		return nil, fmt.Errorf("invalid --source %q: must be naukri, linkedin, or both", value)
+	}
+}
+
+// selectPlatforms builds the PlatformEntry values for the requested Sources,
+// always in Naukri-then-LinkedIn order regardless of flag order.
+func selectPlatforms(sources []domain.Source) []pipeline.PlatformEntry {
+	all := []pipeline.PlatformEntry{
+		{Source: domain.SourceNaukri, Client: fakeplatform.New(domain.SourceNaukri, sampleNaukriProfiles())},
+		{Source: domain.SourceLinkedIn, Client: fakeplatform.New(domain.SourceLinkedIn, sampleLinkedInProfiles())},
+	}
+	want := make(map[domain.Source]bool, len(sources))
+	for _, s := range sources {
+		want[s] = true
+	}
+	entries := make([]pipeline.PlatformEntry, 0, len(all))
+	for _, e := range all {
+		if want[e.Source] {
+			entries = append(entries, e)
+		}
+	}
+	return entries
 }
 
 // sampleNaukriProfiles and sampleLinkedInProfiles stand in for real search

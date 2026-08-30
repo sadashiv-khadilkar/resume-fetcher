@@ -66,7 +66,7 @@ A personal, local Go CLI tool that, given a JD, uses the operator's own already-
 **CLI**
 
 28. As the operator, I want a `login <platform>` command to capture a session for one platform at a time, so that I can manage Naukri and LinkedIn sessions independently.
-29. As the operator, I want a `fetch --jd <file>` command that runs the full pipeline against a given JD file, so that one command produces a finished shortlist.
+29. As the operator, I want a `fetch --jd <file> [--source naukri|linkedin|both] [--top-n N]` command that runs the full pipeline against a given JD file, so that one command produces a finished shortlist, optionally scoped to a single platform.
 
 ## Implementation Decisions
 
@@ -84,11 +84,11 @@ A personal, local Go CLI tool that, given a JD, uses the operator's own already-
   - `Rank(jd string, profiles []Profile) ([]Match, error)`
 - **Orchestrator/pipeline package** wiring both seams together: extract filters → CLI confirm/edit prompt → search both platforms (capped top 50 each) → dedup/merge into Candidates → rank via `LLMProvider` → keep top 20-50 by Match Score → download resumes for top N (default 10) → write output.
 - **Output writer**: one folder per Fetch Run; a JSON file of Candidates (each holding one or more Profiles plus an optional Resume file path); a `resumes/` subfolder.
-- **CLI package**: subcommands `login <platform>`, `fetch --jd <file> [--top-n N]`, `runs`.
+- **CLI package**: subcommands `login <platform>`, `fetch --jd <file> [--source naukri|linkedin|both] [--top-n N]`, `runs`. `--source` (case-insensitive, default `both`) is resolved entirely in the CLI layer — it selects which `PlatformEntry` values get passed into the `Orchestrator`; the orchestrator/pipeline package itself stays source-count-agnostic.
 - **Config**: LLM provider selection via env var/config file (e.g. `LLM_PROVIDER=claude`) plus the Claude API key via env var. No platform credentials are configured anywhere.
 - **Dedup rule**: merge on exact email or phone match; fall back to fuzzy match on name + current company, flagging fuzzy merges in the output for manual review.
 - **Resilience**: CAPTCHA/2FA pauses the visible browser for manual resolution, then the run continues; LLM calls retry with backoff, then persist the raw pool and stop if still failing.
-- **Domain vocabulary** (`CONTEXT.md`): `JD`, `Candidate`, `Profile`, `Resume`, `Match Score`, `Fetch Run` — used consistently in code, CLI output, and file/field naming.
+- **Domain vocabulary** (`CONTEXT.md`): `JD`, `Candidate`, `Profile`, `Resume`, `Match Score`, `Fetch Run`, `Source` — used consistently in code, CLI output, and file/field naming.
 - **ADRs to respect**: `0001` (automation over official APIs), `0002` (Go + go-rod), `0003` (manual login, no stored credentials).
 
 ## Testing Decisions

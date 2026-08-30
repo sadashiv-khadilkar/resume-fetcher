@@ -20,7 +20,7 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: resumefetcher <fetch> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: resumefetcher <fetch|login> [flags]")
 		os.Exit(1)
 	}
 
@@ -28,6 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "fetch":
 		err = cli.RunFetch(os.Args[2:], os.Stdin, os.Stdout)
+	case "login":
+		err = cli.RunLogin(os.Args[2:], os.Stdout)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

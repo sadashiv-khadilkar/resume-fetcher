@@ -4,6 +4,10 @@
 # Fetch Run output (internal/output) - per-run generated data, not source.
 /output/
 
+# Persisted PlatformClient login sessions (internal/session, ticket 03) -
+# machine-local, never credentials themselves, but still not source.
+/sessions/
+
 # go build ./cmd/resumefetcher output at the repo root.
 /resumefetcher
 /resumefetcher.exe

@@ -1,8 +1,7 @@
 // Package naukriclient implements platform.Client for Naukri Resdex,
 // driving a real browser via go-rod + go-rod/stealth (ADR-0002). Ticket 03
-// implements Login and session persistence; ticket 04 implements Search.
-// DownloadResume (ticket 05) lands in a later ticket and is stubbed out
-// here.
+// implements Login and session persistence; ticket 04 implements Search;
+// ticket 05 implements DownloadResume.
 //
 // The browser interface below is the seam that keeps the session
 // reuse-vs-manual-login decision (shared by Login and Search) unit-testable:
@@ -36,6 +35,12 @@ type browser interface {
 	// CAPTCHA/2FA/rate-limit prompt hit along the way, and returns the raw
 	// result Profiles.
 	Search(state platform.SessionState, filters domain.Filters) ([]domain.Profile, error)
+	// DownloadResume drives a Resdex resume download for profileID with
+	// state's session applied, pausing the visible browser for the operator
+	// to resolve any CAPTCHA/2FA/rate-limit prompt hit along the way, and
+	// returns the downloaded file (or an unavailable ResumeFile if this
+	// candidate has none to download).
+	DownloadResume(state platform.SessionState, profileID string) (domain.ResumeFile, error)
 }
 
 // Client is a real platform.Client for Naukri Resdex.
@@ -107,7 +112,19 @@ func (c *Client) ensureSession() (platform.SessionState, error) {
 	return fresh, nil
 }
 
-// DownloadResume is not implemented until ticket 05.
-func (c *Client) DownloadResume(_ string) (domain.ResumeFile, error) {
-	return domain.ResumeFile{}, errors.New("naukriclient: DownloadResume not implemented until ticket 05")
+// DownloadResume ensures a valid Naukri session exactly as Login and Search
+// do - so a bare `fetch` works without a separate `login naukri` step first
+// - then drives a real Resdex resume download for profileID. The pipeline
+// (ticket 01) only calls this for its top-N ranked Naukri candidates, so
+// only those consume a Resdex credit.
+func (c *Client) DownloadResume(profileID string) (domain.ResumeFile, error) {
+	state, err := c.ensureSession()
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("naukri download resume: %w", err)
+	}
+	rf, err := c.browser.DownloadResume(state, profileID)
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("naukri download resume: %w", err)
+	}
+	return rf, nil
 }

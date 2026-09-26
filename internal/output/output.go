@@ -17,6 +17,34 @@ type candidatesDocument struct {
 	Candidates []domain.Candidate `json:"candidates"`
 }
 
+// RunMetaFileName is the file WriteRunMeta writes into a run's output
+// folder, and the file ticket 09's `runs` command reads back.
+const RunMetaFileName = "run.json"
+
+// RunMeta captures the per-run metadata that isn't implied by
+// candidates.json but that `runs` (ticket 09) needs to list past Fetch
+// Runs: the JD used and when the run started. It's written into the same
+// per-run folder WriteRun already creates, so `runs` still reads only from
+// the existing per-run output folder structure - no separate run-tracking
+// store is introduced.
+type RunMeta struct {
+	JD        string    `json:"jd"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// WriteRunMeta writes meta into runDir (a folder previously returned by
+// WriteRun) as run.json.
+func WriteRunMeta(runDir string, meta RunMeta) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal run meta: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, RunMetaFileName), data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", RunMetaFileName, err)
+	}
+	return nil
+}
+
 // WriteRun writes result under a new timestamped folder inside baseDir and
 // returns that folder's path. The folder name is made unique via
 // os.MkdirTemp, since two runs completing within the same wall-clock second

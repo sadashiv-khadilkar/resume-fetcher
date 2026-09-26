@@ -6,12 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"resumefetcher/internal/domain"
 	claudellm "resumefetcher/internal/llmprovider/claude"
 	fakellm "resumefetcher/internal/llmprovider/fake"
 	"resumefetcher/internal/pipeline"
-	fakeplatform "resumefetcher/internal/platform/fake"
+	"resumefetcher/internal/platform/linkedinclient"
 	"resumefetcher/internal/platform/naukriclient"
 )
 
@@ -52,10 +53,11 @@ func TestParseSources(t *testing.T) {
 	}
 }
 
-// TestSelectPlatforms checks the real-vs-fake wiring decision itself
-// (naukriclient for Naukri per ticket 04, fake for LinkedIn until ticket 07)
-// without exercising naukriclient's browser automation - real PlatformClient
-// construction does no network/browser work, only Search and Login do.
+// TestSelectPlatforms checks the real-client wiring decision itself
+// (naukriclient for Naukri per ticket 04, linkedinclient for LinkedIn per
+// ticket 07) without exercising either client's browser automation - real
+// PlatformClient construction does no network/browser work, only Search and
+// Login do.
 func TestSelectPlatforms(t *testing.T) {
 	var out bytes.Buffer
 	entries := selectPlatforms([]domain.Source{domain.SourceNaukri, domain.SourceLinkedIn}, &out)
@@ -73,8 +75,8 @@ func TestSelectPlatforms(t *testing.T) {
 	if entries[1].Source != domain.SourceLinkedIn {
 		t.Errorf("entries[1].Source = %v, want %v", entries[1].Source, domain.SourceLinkedIn)
 	}
-	if _, ok := entries[1].Client.(*fakeplatform.Client); !ok {
-		t.Errorf("entries[1].Client is %T, want *fakeplatform.Client", entries[1].Client)
+	if _, ok := entries[1].Client.(*linkedinclient.Client); !ok {
+		t.Errorf("entries[1].Client is %T, want *linkedinclient.Client", entries[1].Client)
 	}
 }
 
@@ -139,7 +141,7 @@ func TestWritePartialOnRankFailure(t *testing.T) {
 		},
 	}
 
-	err := writePartialOnRankFailure(&out, outDir, rankErr)
+	err := writePartialOnRankFailure(&out, outDir, "# Backend Engineer JD", time.Now(), rankErr)
 	if err == nil {
 		t.Fatal("expected writePartialOnRankFailure to still return an error")
 	}
@@ -175,7 +177,7 @@ func TestWritePartialOnRankFailure(t *testing.T) {
 
 func TestWritePartialOnRankFailure_NonRankError(t *testing.T) {
 	var out bytes.Buffer
-	err := writePartialOnRankFailure(&out, t.TempDir(), os.ErrPermission)
+	err := writePartialOnRankFailure(&out, t.TempDir(), "# JD", time.Now(), os.ErrPermission)
 	if err == nil {
 		t.Fatal("expected an error to be returned")
 	}

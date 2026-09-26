@@ -1,8 +1,8 @@
 // Package cli wires the pipeline seams into runnable commands. fetch wires a
-// real naukriclient for Naukri (ticket 04) and a fake PlatformClient for
-// LinkedIn (until ticket 07); the LLMProvider defaults to a fake and opts
-// into the real Claude client via LLM_PROVIDER (ticket 02). ADR-0001-0003
-// govern the real PlatformClient implementations.
+// real naukriclient for Naukri (ticket 04) and a real linkedinclient for
+// LinkedIn (ticket 07); the LLMProvider defaults to a fake and opts into the
+// real Claude client via LLM_PROVIDER (ticket 02). ADR-0001-0003 govern the
+// real PlatformClient implementations.
 package cli
 
 import (
@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"resumefetcher/internal/domain"
 	"resumefetcher/internal/llmprovider"
@@ -19,7 +20,7 @@ import (
 	fakellm "resumefetcher/internal/llmprovider/fake"
 	"resumefetcher/internal/output"
 	"resumefetcher/internal/pipeline"
-	fakeplatform "resumefetcher/internal/platform/fake"
+	"resumefetcher/internal/platform/linkedinclient"
 	"resumefetcher/internal/platform/naukriclient"
 	"resumefetcher/internal/reviewer"
 	"resumefetcher/internal/session"
@@ -60,14 +61,18 @@ func RunFetch(args []string, in io.Reader, out io.Writer) error {
 		Config:    pipeline.DefaultConfig(),
 	}
 
+	startedAt := time.Now()
 	result, err := orch.Run(string(jdBytes))
 	if err != nil {
-		return writePartialOnRankFailure(out, *outDir, err)
+		return writePartialOnRankFailure(out, *outDir, string(jdBytes), startedAt, err)
 	}
 
 	runDir, err := output.WriteRun(*outDir, result)
 	if err != nil {
 		return fmt.Errorf("write output: %w", err)
+	}
+	if err := output.WriteRunMeta(runDir, output.RunMeta{JD: string(jdBytes), StartedAt: startedAt}); err != nil {
+		return fmt.Errorf("write run metadata: %w", err)
 	}
 
 	printSummary(out, result.Candidates, runDir)
@@ -133,8 +138,10 @@ func buildLLMProvider() (llmprovider.Provider, error) {
 // writePartialOnRankFailure persists the raw (unranked) candidate pool when
 // err is a *pipeline.RankFailedError, so a Rank failure after retries are
 // exhausted (ticket 02) doesn't lose already-fetched data. It always returns
-// a non-nil error derived from err.
-func writePartialOnRankFailure(out io.Writer, outDir string, err error) error {
+// a non-nil error derived from err. jd and startedAt are recorded alongside
+// the raw pool (via output.WriteRunMeta) so `runs` (ticket 09) can still
+// list this run even though ranking never completed.
+func writePartialOnRankFailure(out io.Writer, outDir, jd string, startedAt time.Time, err error) error {
 	var rankErr *pipeline.RankFailedError
 	if !errors.As(err, &rankErr) {
 		return fmt.Errorf("run pipeline: %w", err)
@@ -144,18 +151,22 @@ func writePartialOnRankFailure(out io.Writer, outDir string, err error) error {
 	if writeErr != nil {
 		return fmt.Errorf("run pipeline: %w; also failed to persist raw candidate pool: %v", err, writeErr)
 	}
+	if metaErr := output.WriteRunMeta(runDir, output.RunMeta{JD: jd, StartedAt: startedAt}); metaErr != nil {
+		fmt.Fprintf(out, "warning: failed to write run metadata: %v\n", metaErr)
+	}
 	fmt.Fprintf(out, "\nRanking failed after retries: %v\nRaw (unranked) candidate pool saved to %s\n", rankErr.Err, runDir)
 	return fmt.Errorf("run pipeline: %w", err)
 }
 
 // selectPlatforms builds the PlatformEntry values for the requested Sources,
 // always in Naukri-then-LinkedIn order regardless of flag order. Naukri uses
-// the real naukriclient (ticket 04), reusing the same sessionDir as `login
-// naukri`; LinkedIn stands in with a fake PlatformClient until ticket 07.
+// the real naukriclient (ticket 04); LinkedIn uses the real linkedinclient
+// (ticket 07). Both reuse the same sessionDir as their respective `login`
+// subcommands.
 func selectPlatforms(sources []domain.Source, out io.Writer) []pipeline.PlatformEntry {
 	all := []pipeline.PlatformEntry{
 		{Source: domain.SourceNaukri, Client: naukriclient.New(session.New(sessionDir), out)},
-		{Source: domain.SourceLinkedIn, Client: fakeplatform.New(domain.SourceLinkedIn, sampleLinkedInProfiles())},
+		{Source: domain.SourceLinkedIn, Client: linkedinclient.New(session.New(sessionDir), out)},
 	}
 	want := make(map[domain.Source]bool, len(sources))
 	for _, s := range sources {
@@ -168,15 +179,6 @@ func selectPlatforms(sources []domain.Source, out io.Writer) []pipeline.Platform
 		}
 	}
 	return entries
-}
-
-// sampleLinkedInProfiles stands in for real search results until ticket 07
-// wires in the real LinkedIn PlatformClient.
-func sampleLinkedInProfiles() []domain.Profile {
-	return []domain.Profile{
-		{ExternalID: "linkedin-1", Source: domain.SourceLinkedIn, Name: "Asha Rao", Email: "asha.rao@example.com", Company: "Acme Corp", Title: "Backend Engineer", Skills: []string{"Go", "gRPC"}, Experience: 5, Location: "Bangalore"},
-		{ExternalID: "linkedin-2", Source: domain.SourceLinkedIn, Name: "Meera Iyer", Company: "Initech", Title: "Platform Engineer", Skills: []string{"Go", "AWS"}, Experience: 4, Location: "Hyderabad"},
-	}
 }
 
 // sampleScore is a placeholder ranking heuristic (more Skills = higher

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,7 +85,25 @@ const (
 	candidateEducationSelector   = ".search-result-card__education"
 	candidateLocationSelector    = ".search-result-card__location"
 	candidateProfileLinkSelector = "a.search-result-card__profile-link"
+
+	// exportPDFButtonSelector is Recruiter's native "export/save as PDF"
+	// profile control. Unverified against the real DOM - see
+	// recruiterSearchURL's doc comment.
+	exportPDFButtonSelector = "button[data-test-export-pdf]"
 )
+
+// downloadButtonProbeTimeout bounds how long DownloadResume waits to see
+// whether a Recruiter profile page shows an export-PDF control at all,
+// distinct from resumeDownloadTimeout's much longer bound on the actual
+// export (including any challenge resolution) once a click is underway. A
+// missing control isn't an error - it just means this candidate's settings
+// block export (or LinkedIn has otherwise made no PDF export available).
+const downloadButtonProbeTimeout = 5 * time.Second
+
+// resumeDownloadTimeout bounds DownloadResume's entire browser interaction,
+// mirroring searchTimeout's role for Search: it has to accommodate a full
+// challengeTimeout wait on top of ordinary navigation and the export itself.
+const resumeDownloadTimeout = challengeTimeout + 2*time.Minute
 
 // maxSearchResults defensively bounds how many result cards Search scrapes
 // per call, matching pipeline.DefaultConfig's RawPoolCapPerPlatform so a
@@ -330,6 +350,95 @@ func (b *rodBrowser) Search(state platform.SessionState, filters domain.Filters)
 		fmt.Fprintln(b.out, "LinkedIn Recruiter search returned no result cards; if candidates were expected, the result-card selector may need updating against the real DOM.")
 	}
 	return profiles, nil
+}
+
+// DownloadResume loads state's cookies into a visible browser (visible, for
+// the same CAPTCHA/2FA/rate-limit resolution reason as Search), navigates to
+// profileID - the profile URL captured by Search's scrape (see
+// profileFromCard) - and clicks Recruiter's native profile-PDF export
+// control. If the profile page shows no such control (the candidate's
+// settings block export, or LinkedIn has otherwise made no PDF export
+// available), it returns an unavailable ResumeFile rather than an error, per
+// this ticket's checklist item about clearly recording that no Resume could
+// be obtained rather than a silent omission or a bug.
+func (b *rodBrowser) DownloadResume(state platform.SessionState, profileID string) (domain.ResumeFile, error) {
+	var cookies []*proto.NetworkCookie
+	if err := json.Unmarshal(state.Data, &cookies); err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("decode session: %w", err)
+	}
+
+	br, cleanup, err := launchBrowser(false)
+	if err != nil {
+		return domain.ResumeFile{}, err
+	}
+	defer cleanup()
+
+	if err := br.SetCookies(proto.CookiesToParams(cookies)); err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("apply session cookies: %w", err)
+	}
+	br = br.Timeout(resumeDownloadTimeout)
+
+	page, err := stealth.Page(br)
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("open page: %w", err)
+	}
+
+	if err := page.Navigate(profileID); err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("navigate to Recruiter profile: %w", err)
+	}
+	if err := page.WaitStable(pollInterval); err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("wait for Recruiter profile page: %w", err)
+	}
+	if err := requireLoggedIn(page); err != nil {
+		return domain.ResumeFile{}, err
+	}
+	if err := waitForChallengeResolution(b.out, page); err != nil {
+		return domain.ResumeFile{}, err
+	}
+
+	button, err := page.Timeout(downloadButtonProbeTimeout).Element(exportPDFButtonSelector)
+	if err != nil {
+		fmt.Fprintln(b.out, "No profile-PDF export control found on the Recruiter profile page; treating this candidate's resume as unavailable.")
+		return domain.ResumeFile{}, nil
+	}
+
+	dir, err := os.MkdirTemp("", "resumefetcher-linkedin-resume-*")
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("create download dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
+	wait := br.WaitDownload(dir)
+	if err := button.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("click profile-PDF export control: %w", err)
+	}
+	if err := waitForChallengeResolution(b.out, page); err != nil {
+		return domain.ResumeFile{}, err
+	}
+
+	downloaded := make(chan *proto.PageDownloadWillBegin, 1)
+	go func() { downloaded <- wait() }()
+
+	var info *proto.PageDownloadWillBegin
+	select {
+	case info = <-downloaded:
+	case <-time.After(resumeDownloadTimeout):
+		return domain.ResumeFile{}, fmt.Errorf("timed out after %s waiting for the LinkedIn profile-PDF export to complete", resumeDownloadTimeout)
+	}
+	if info == nil {
+		return domain.ResumeFile{}, errors.New("linkedin profile-PDF export did not start")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, info.GUID))
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("read exported profile PDF: %w", err)
+	}
+
+	return domain.ResumeFile{
+		Available: true,
+		Data:      data,
+		Ext:       strings.TrimPrefix(filepath.Ext(info.SuggestedFilename), "."),
+	}, nil
 }
 
 // requireLoggedIn reports a clear "session invalid" error if page has been

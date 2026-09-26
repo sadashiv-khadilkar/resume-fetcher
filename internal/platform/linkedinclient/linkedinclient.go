@@ -1,14 +1,13 @@
 // Package linkedinclient implements platform.Client for LinkedIn Recruiter,
 // driving a real browser via go-rod + go-rod/stealth (ADR-0002). Ticket 06
-// implements Login and session persistence; ticket 07 implements Search.
-// DownloadResume (ticket 08) lands in a later ticket and is stubbed out
-// here.
+// implements Login and session persistence; ticket 07 implements Search;
+// ticket 08 implements DownloadResume.
 //
 // The browser interface below is the seam that keeps the session
-// reuse-vs-manual-login decision (shared by Login and Search) unit-testable:
-// the real automation (rodBrowser, in rod.go) is verified manually against
-// the operator's real LinkedIn Recruiter account instead, per
-// .scratch/resume-fetcher/spec.md's Testing Decisions.
+// reuse-vs-manual-login decision (shared by Login, Search and DownloadResume)
+// unit-testable: the real automation (rodBrowser, in rod.go) is verified
+// manually against the operator's real LinkedIn Recruiter account instead,
+// per .scratch/resume-fetcher/spec.md's Testing Decisions.
 package linkedinclient
 
 import (
@@ -36,6 +35,12 @@ type browser interface {
 	// CAPTCHA/2FA/rate-limit prompt hit along the way, and returns the raw
 	// result Profiles.
 	Search(state platform.SessionState, filters domain.Filters) ([]domain.Profile, error)
+	// DownloadResume drives a Recruiter profile-PDF export for profileID with
+	// state's session applied, pausing the visible browser for the operator
+	// to resolve any CAPTCHA/2FA/rate-limit prompt hit along the way, and
+	// returns the exported file (or an unavailable ResumeFile if this
+	// candidate's settings block export).
+	DownloadResume(state platform.SessionState, profileID string) (domain.ResumeFile, error)
 }
 
 // Client is a real platform.Client for LinkedIn Recruiter.
@@ -109,7 +114,19 @@ func (c *Client) Search(filters domain.Filters) ([]domain.Profile, error) {
 	return profiles, nil
 }
 
-// DownloadResume is not implemented until ticket 08.
-func (c *Client) DownloadResume(string) (domain.ResumeFile, error) {
-	return domain.ResumeFile{}, errors.New("linkedin resume download is not implemented yet (ticket 08)")
+// DownloadResume ensures a valid LinkedIn Recruiter session exactly as Login
+// and Search do - so a bare `fetch` works without a separate `login
+// linkedin` step first - then drives a real Recruiter profile-PDF export for
+// profileID. The pipeline (ticket 01) only calls this for its top-N ranked
+// LinkedIn candidates, matching ticket 05's Naukri approach.
+func (c *Client) DownloadResume(profileID string) (domain.ResumeFile, error) {
+	state, err := c.ensureSession()
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("linkedin download resume: %w", err)
+	}
+	rf, err := c.browser.DownloadResume(state, profileID)
+	if err != nil {
+		return domain.ResumeFile{}, fmt.Errorf("linkedin download resume: %w", err)
+	}
+	return rf, nil
 }

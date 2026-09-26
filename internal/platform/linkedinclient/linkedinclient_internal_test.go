@@ -26,6 +26,12 @@ type fakeBrowser struct {
 	searchCalled   bool
 	searchState    platform.SessionState
 	searchFilters  domain.Filters
+
+	downloadResult    domain.ResumeFile
+	downloadErr       error
+	downloadCalled    bool
+	downloadState     platform.SessionState
+	downloadProfileID string
 }
 
 func (f *fakeBrowser) ValidateSession(platform.SessionState) (bool, error) {
@@ -42,6 +48,13 @@ func (f *fakeBrowser) Search(state platform.SessionState, filters domain.Filters
 	f.searchState = state
 	f.searchFilters = filters
 	return f.searchProfiles, f.searchErr
+}
+
+func (f *fakeBrowser) DownloadResume(state platform.SessionState, profileID string) (domain.ResumeFile, error) {
+	f.downloadCalled = true
+	f.downloadState = state
+	f.downloadProfileID = profileID
+	return f.downloadResult, f.downloadErr
 }
 
 func newTestClient(t *testing.T, b browser) (*Client, *session.Store, *bytes.Buffer) {
@@ -244,9 +257,97 @@ func TestSearch_ManualLoginFailure_IsSurfacedWithoutSearching(t *testing.T) {
 	}
 }
 
-func TestDownloadResume_NotImplementedYet(t *testing.T) {
-	client, _, _ := newTestClient(t, &fakeBrowser{})
-	if _, err := client.DownloadResume("profile-1"); err == nil {
-		t.Error("expected DownloadResume() to return a not-implemented error (ticket 08)")
+func TestDownloadResume_ReusesValidSessionAndDelegatesToBrowser(t *testing.T) {
+	want := domain.ResumeFile{Available: true, Data: []byte("pdf-bytes"), Ext: "pdf"}
+	fb := &fakeBrowser{validateResult: true, downloadResult: want}
+	client, store, _ := newTestClient(t, fb)
+	existing := platform.SessionState{Data: []byte("existing-cookies")}
+	if err := store.Save(domain.SourceLinkedIn, existing); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := client.DownloadResume("profile-1")
+	if err != nil {
+		t.Fatalf("DownloadResume() error = %v", err)
+	}
+	if !got.Available || string(got.Data) != "pdf-bytes" || got.Ext != "pdf" {
+		t.Errorf("DownloadResume() = %+v, want %+v", got, want)
+	}
+	if fb.manualCalled {
+		t.Error("DownloadResume() called ManualLogin despite a valid persisted session")
+	}
+	if !fb.downloadCalled {
+		t.Fatal("expected DownloadResume() to delegate to browser.DownloadResume")
+	}
+	if string(fb.downloadState.Data) != "existing-cookies" {
+		t.Errorf("browser.DownloadResume got session %q, want the reused persisted session", fb.downloadState.Data)
+	}
+	if fb.downloadProfileID != "profile-1" {
+		t.Errorf("browser.DownloadResume got profileID %q, want %q", fb.downloadProfileID, "profile-1")
+	}
+}
+
+func TestDownloadResume_NoPersistedSession_FallsBackToManualLoginThenDownloads(t *testing.T) {
+	fb := &fakeBrowser{
+		manualState:    platform.SessionState{Data: []byte("fresh-cookies")},
+		downloadResult: domain.ResumeFile{Available: true, Data: []byte("bytes")},
+	}
+	client, store, _ := newTestClient(t, fb)
+
+	got, err := client.DownloadResume("profile-2")
+	if err != nil {
+		t.Fatalf("DownloadResume() error = %v", err)
+	}
+	if !fb.manualCalled {
+		t.Error("expected DownloadResume() to fall back to ManualLogin when no session is persisted")
+	}
+	if string(fb.downloadState.Data) != "fresh-cookies" {
+		t.Errorf("browser.DownloadResume got session %q, want the freshly captured session", fb.downloadState.Data)
+	}
+	if !got.Available {
+		t.Errorf("DownloadResume() = %+v, want the browser's result", got)
+	}
+	if _, err := store.Load(domain.SourceLinkedIn); err != nil {
+		t.Errorf("expected the fresh session to be persisted, Load() error = %v", err)
+	}
+}
+
+func TestDownloadResume_PropagatesBrowserError(t *testing.T) {
+	fb := &fakeBrowser{validateResult: true, downloadErr: errors.New("recruiter boom")}
+	client, store, _ := newTestClient(t, fb)
+	if err := store.Save(domain.SourceLinkedIn, platform.SessionState{Data: []byte("cookies")}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if _, err := client.DownloadResume("profile-3"); err == nil {
+		t.Fatal("expected DownloadResume() to surface the browser's error")
+	}
+}
+
+func TestDownloadResume_ManualLoginFailure_IsSurfacedWithoutDownloading(t *testing.T) {
+	fb := &fakeBrowser{manualErr: errors.New("operator closed the browser")}
+	client, _, _ := newTestClient(t, fb)
+
+	if _, err := client.DownloadResume("profile-4"); err == nil {
+		t.Fatal("expected DownloadResume() to surface the ManualLogin error")
+	}
+	if fb.downloadCalled {
+		t.Error("DownloadResume() should not call browser.DownloadResume when ensuring the session failed")
+	}
+}
+
+func TestDownloadResume_UnavailableResume_IsNotAnError(t *testing.T) {
+	fb := &fakeBrowser{validateResult: true, downloadResult: domain.ResumeFile{Available: false}}
+	client, store, _ := newTestClient(t, fb)
+	if err := store.Save(domain.SourceLinkedIn, platform.SessionState{Data: []byte("cookies")}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := client.DownloadResume("profile-5")
+	if err != nil {
+		t.Fatalf("DownloadResume() error = %v, want no error for an unavailable resume", err)
+	}
+	if got.Available {
+		t.Errorf("DownloadResume() = %+v, want Available = false", got)
 	}
 }

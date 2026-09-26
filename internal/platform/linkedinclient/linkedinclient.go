@@ -1,13 +1,14 @@
 // Package linkedinclient implements platform.Client for LinkedIn Recruiter,
 // driving a real browser via go-rod + go-rod/stealth (ADR-0002). Ticket 06
-// implements Login and session persistence; Search and DownloadResume are
-// implemented by tickets 07/08.
+// implements Login and session persistence; ticket 07 implements Search.
+// DownloadResume (ticket 08) lands in a later ticket and is stubbed out
+// here.
 //
 // The browser interface below is the seam that keeps the session
-// reuse-vs-manual-login decision unit-testable: the real automation
-// (rodBrowser, in rod.go) is verified manually against the operator's real
-// LinkedIn Recruiter account instead, per .scratch/resume-fetcher/spec.md's
-// Testing Decisions.
+// reuse-vs-manual-login decision (shared by Login and Search) unit-testable:
+// the real automation (rodBrowser, in rod.go) is verified manually against
+// the operator's real LinkedIn Recruiter account instead, per
+// .scratch/resume-fetcher/spec.md's Testing Decisions.
 package linkedinclient
 
 import (
@@ -30,6 +31,11 @@ type browser interface {
 	// 2FA/CAPTCHA), then returns the resulting session. It never submits
 	// credentials itself (ADR-0003).
 	ManualLogin() (platform.SessionState, error)
+	// Search drives a native LinkedIn Recruiter search with state's session
+	// applied, pausing the visible browser for the operator to resolve any
+	// CAPTCHA/2FA/rate-limit prompt hit along the way, and returns the raw
+	// result Profiles.
+	Search(state platform.SessionState, filters domain.Filters) ([]domain.Profile, error)
 }
 
 // Client is a real platform.Client for LinkedIn Recruiter.
@@ -87,9 +93,20 @@ func (c *Client) ensureSession() (platform.SessionState, error) {
 	return fresh, nil
 }
 
-// Search is not implemented until ticket 07.
-func (c *Client) Search(domain.Filters) ([]domain.Profile, error) {
-	return nil, errors.New("linkedin search is not implemented yet (ticket 07)")
+// Search ensures a valid LinkedIn Recruiter session - reusing a persisted
+// one, or falling back to a fresh manual login exactly as Login does, so a
+// bare `fetch` works without a separate `login linkedin` step first - then
+// drives a real Recruiter search for filters.
+func (c *Client) Search(filters domain.Filters) ([]domain.Profile, error) {
+	state, err := c.ensureSession()
+	if err != nil {
+		return nil, fmt.Errorf("linkedin search: %w", err)
+	}
+	profiles, err := c.browser.Search(state, filters)
+	if err != nil {
+		return nil, fmt.Errorf("linkedin search: %w", err)
+	}
+	return profiles, nil
 }
 
 // DownloadResume is not implemented until ticket 08.

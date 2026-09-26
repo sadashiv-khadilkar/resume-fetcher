@@ -7,6 +7,7 @@ import (
 
 	"resumefetcher/internal/domain"
 	"resumefetcher/internal/platform"
+	"resumefetcher/internal/platform/linkedinclient"
 	"resumefetcher/internal/platform/naukriclient"
 	"resumefetcher/internal/session"
 )
@@ -37,15 +38,13 @@ func runLogin(client platform.Client, source domain.Source, out io.Writer) error
 	return nil
 }
 
-// buildLoginClient resolves a platform name to its PlatformClient. LinkedIn
-// is a distinct, expected "not yet" case (ticket 06) from a genuinely
-// invalid platform name.
+// buildLoginClient resolves a platform name to its PlatformClient.
 func buildLoginClient(platformName string, out io.Writer) (platform.Client, domain.Source, error) {
 	switch platformName {
 	case "naukri":
 		return naukriclient.New(session.New(sessionDir), out), domain.SourceNaukri, nil
 	case "linkedin":
-		return nil, "", fmt.Errorf("linkedin login is not implemented yet (ticket 06)")
+		return linkedinclient.New(session.New(sessionDir), out), domain.SourceLinkedIn, nil
 	default:
 		return nil, "", fmt.Errorf("invalid platform %q: must be naukri or linkedin", platformName)
 	}

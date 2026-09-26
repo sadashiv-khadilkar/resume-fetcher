@@ -1,0 +1,166 @@
+package linkedinclient
+
+import (
+	"bytes"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"resumefetcher/internal/domain"
+	"resumefetcher/internal/platform"
+	"resumefetcher/internal/session"
+)
+
+// fakeBrowser stands in for the real go-rod automation so Login's
+// reuse/manual-login decision can be tested without a real browser.
+type fakeBrowser struct {
+	validateResult bool
+	validateErr    error
+	manualState    platform.SessionState
+	manualErr      error
+	manualCalled   bool
+}
+
+func (f *fakeBrowser) ValidateSession(platform.SessionState) (bool, error) {
+	return f.validateResult, f.validateErr
+}
+
+func (f *fakeBrowser) ManualLogin() (platform.SessionState, error) {
+	f.manualCalled = true
+	return f.manualState, f.manualErr
+}
+
+func newTestClient(t *testing.T, b browser) (*Client, *session.Store, *bytes.Buffer) {
+	t.Helper()
+	store := session.New(filepath.Join(t.TempDir(), "sessions"))
+	var out bytes.Buffer
+	return &Client{store: store, browser: b, out: &out}, store, &out
+}
+
+func TestLogin_ReusesValidPersistedSession(t *testing.T) {
+	fb := &fakeBrowser{validateResult: true}
+	client, store, out := newTestClient(t, fb)
+	want := platform.SessionState{Data: []byte("existing-cookies")}
+	if err := store.Save(domain.SourceLinkedIn, want); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := client.Login()
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if string(got.Data) != string(want.Data) {
+		t.Errorf("Login() = %q, want the reused persisted session %q", got.Data, want.Data)
+	}
+	if fb.manualCalled {
+		t.Error("Login() called ManualLogin despite a valid persisted session")
+	}
+	if !strings.Contains(out.String(), "reusing") {
+		t.Errorf("expected a message about reusing the session, got %q", out.String())
+	}
+}
+
+func TestLogin_NoPersistedSession_FallsBackToManualLogin(t *testing.T) {
+	fb := &fakeBrowser{manualState: platform.SessionState{Data: []byte("fresh-cookies")}}
+	client, store, out := newTestClient(t, fb)
+
+	got, err := client.Login()
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if !fb.manualCalled {
+		t.Error("expected Login() to fall back to ManualLogin when no session is persisted")
+	}
+	if string(got.Data) != "fresh-cookies" {
+		t.Errorf("Login() = %q, want the freshly captured session", got.Data)
+	}
+
+	persisted, err := store.Load(domain.SourceLinkedIn)
+	if err != nil {
+		t.Fatalf("expected the fresh session to be persisted, Load() error = %v", err)
+	}
+	if string(persisted.Data) != "fresh-cookies" {
+		t.Errorf("persisted session = %q, want %q", persisted.Data, "fresh-cookies")
+	}
+	if !strings.Contains(out.String(), "No LinkedIn session found") {
+		t.Errorf("expected a message about no session being found, got %q", out.String())
+	}
+}
+
+func TestLogin_ExpiredPersistedSession_FallsBackToManualLoginAndOverwrites(t *testing.T) {
+	fb := &fakeBrowser{
+		validateResult: false,
+		manualState:    platform.SessionState{Data: []byte("fresh-cookies")},
+	}
+	client, store, out := newTestClient(t, fb)
+	if err := store.Save(domain.SourceLinkedIn, platform.SessionState{Data: []byte("stale-cookies")}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := client.Login()
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if !fb.manualCalled {
+		t.Error("expected Login() to fall back to ManualLogin when the persisted session is invalid")
+	}
+	if string(got.Data) != "fresh-cookies" {
+		t.Errorf("Login() = %q, want the freshly captured session", got.Data)
+	}
+
+	persisted, err := store.Load(domain.SourceLinkedIn)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if string(persisted.Data) != "fresh-cookies" {
+		t.Errorf("persisted session = %q, want the stale one overwritten with %q", persisted.Data, "fresh-cookies")
+	}
+	if !strings.Contains(out.String(), "expired") {
+		t.Errorf("expected a message about the session having expired, got %q", out.String())
+	}
+}
+
+func TestLogin_ValidateSessionError_IsSurfacedWithoutFallingBack(t *testing.T) {
+	fb := &fakeBrowser{validateErr: errors.New("boom")}
+	client, store, _ := newTestClient(t, fb)
+	if err := store.Save(domain.SourceLinkedIn, platform.SessionState{Data: []byte("cookies")}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	_, err := client.Login()
+	if err == nil {
+		t.Fatal("expected Login() to surface the ValidateSession error")
+	}
+	if fb.manualCalled {
+		t.Error("Login() should not fall back to ManualLogin when validation itself errored")
+	}
+}
+
+func TestLogin_ManualLoginError_IsSurfacedAndNotPersisted(t *testing.T) {
+	fb := &fakeBrowser{manualErr: errors.New("operator closed the browser")}
+	client, store, _ := newTestClient(t, fb)
+
+	_, err := client.Login()
+	if err == nil {
+		t.Fatal("expected Login() to surface the ManualLogin error")
+	}
+
+	if _, loadErr := store.Load(domain.SourceLinkedIn); !errors.Is(loadErr, session.ErrNotFound) {
+		t.Errorf("expected no session to be persisted after a failed manual login, Load() error = %v", loadErr)
+	}
+}
+
+func TestSearch_NotImplementedYet(t *testing.T) {
+	client, _, _ := newTestClient(t, &fakeBrowser{})
+	if _, err := client.Search(domain.Filters{}); err == nil {
+		t.Error("expected Search() to return a not-implemented error (ticket 07)")
+	}
+}
+
+func TestDownloadResume_NotImplementedYet(t *testing.T) {
+	client, _, _ := newTestClient(t, &fakeBrowser{})
+	if _, err := client.DownloadResume("profile-1"); err == nil {
+		t.Error("expected DownloadResume() to return a not-implemented error (ticket 08)")
+	}
+}

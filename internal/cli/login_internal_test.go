@@ -8,6 +8,7 @@ import (
 
 	"resumefetcher/internal/domain"
 	"resumefetcher/internal/platform"
+	"resumefetcher/internal/platform/linkedinclient"
 	"resumefetcher/internal/platform/naukriclient"
 )
 
@@ -25,8 +26,15 @@ func TestBuildLoginClient(t *testing.T) {
 		t.Errorf("got %T, want *naukriclient.Client", client)
 	}
 
-	if _, _, err := buildLoginClient("linkedin", &out); err == nil {
-		t.Error("expected an error for linkedin (not implemented until ticket 06)")
+	client, source, err = buildLoginClient("linkedin", &out)
+	if err != nil {
+		t.Fatalf("buildLoginClient(linkedin) error = %v", err)
+	}
+	if source != domain.SourceLinkedIn {
+		t.Errorf("got source %q, want %q", source, domain.SourceLinkedIn)
+	}
+	if _, ok := client.(*linkedinclient.Client); !ok {
+		t.Errorf("got %T, want *linkedinclient.Client", client)
 	}
 
 	if _, _, err := buildLoginClient("bogus", &out); err == nil {
